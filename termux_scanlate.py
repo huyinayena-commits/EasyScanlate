@@ -56,18 +56,12 @@ CJK_PATTERN = re.compile(
 
 def preprocess_image(image_path: Path):
     """
-    Pra-pemrosesan super ringan dengan Pillow untuk Tesseract.
-    Mengubah ke hitam putih dan memperjelas kontras.
+    Melewatkan pra-pemrosesan gambar untuk mengutamakan KECEPATAN (Raw Performance).
+    Filter bawaan Pillow (Contrast/Grayscale/MedianFilter) ternyata membebani CPU Android.
     """
     try:
+        # Langsung buka gambar tanpa memanipulasi pikselnya
         img = Image.open(image_path)
-        # Convert ke grayscale
-        img = img.convert('L')
-        # Tingkatkan kontras 2x lipat
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(2.0)
-        # Median filter untuk membuang bintik-bintik kompresi
-        img = img.filter(ImageFilter.MedianFilter(size=3))
         return img
     except Exception as e:
         print(f"Error memproses gambar {image_path.name}: {e}")
