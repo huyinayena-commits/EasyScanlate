@@ -197,13 +197,14 @@ def process_chapter(input_path: Path, output_md: Path = None, title: str = "", l
             except Exception as e:
                 error_msg = str(e)
                 if "Failed loading language" in error_msg or "tessdata" in error_msg:
-                    print(f"    [!] Peringatan: Bahasa '{lang}' tidak ditemukan. Mencoba bahasa Inggris (eng) sebagai cadangan...")
+                    print(f"    [!] Peringatan: Data bahasa tidak ditemukan. Mencoba OCR mode darurat (tanpa bahasa khusus)...")
                     try:
-                        raw_text = pytesseract.image_to_string(img_processed, lang="eng", config=custom_config)
+                        # Hapus argumen lang=... sepenuhnya saat darurat
+                        raw_text = pytesseract.image_to_string(img_processed, config=custom_config)
                         clean_dialogs = process_text_block(raw_text)
                         results[f"page_{i}"] = clean_dialogs
                     except Exception as e2:
-                        print(f"    [!] Error OCR cadangan: {e2}")
+                        print(f"    [!] Error OCR darurat: {e2}")
                         results[f"page_{i}"] = []
                 else:
                     print(f"    [!] Error OCR tesseract pada gambar ini: {e}")
