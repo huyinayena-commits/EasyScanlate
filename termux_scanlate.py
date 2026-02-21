@@ -149,9 +149,12 @@ def extract_archive(archive_path: Path, temp_dir: Path):
         with rarfile.RarFile(str(archive_path), 'r') as r:
             r.extractall(str(temp_dir))
 
-def process_chapter(input_path: Path, output_md: Path, title: str, lang="ind"):
+def process_chapter(input_path: Path, output_md: Path = None, title: str = "", lang: str = "ind") -> str:
     is_archive = input_path.is_file()
     temp_dir = input_path.parent / f"_temp_{input_path.stem}"
+    
+    chapter_md_lines = []
+    chapter_md_lines.append(f"# {title}\n")
     
     try:
         if is_archive:
@@ -172,7 +175,7 @@ def process_chapter(input_path: Path, output_md: Path, title: str, lang="ind"):
         
         if not images:
             print("[!] Tidak ada gambar ditemukan dalam input.")
-            return
+            return ""
             
         print(f"[*] Menemukan {len(images)} gambar. Memulai memindai OCR...")
         print(f"[*] Perhatian: Ini menggunakan mode antrean satu-satu untuk mencegah Crash di Android.\n")
@@ -195,21 +198,26 @@ def process_chapter(input_path: Path, output_md: Path, title: str, lang="ind"):
                 print(f"    [!] Error OCR tesseract pada gambar ini: {e}")
                 results[f"page_{i}"] = []
 
-        # Tulis Markdown
-        with open(str(output_md), "w", encoding="utf-8") as f:
-            f.write(f"# {title}\n\n")
-            for key, dialogs in results.items():
-                page_num = key.split('_')[1]
-                f.write(f"## Halaman {page_num}\n\n")
-                if not dialogs:
-                    f.write("- *(Tidak ada teks terdeteksi)*\n\n")
-                else:
-                    for j, txt in enumerate(dialogs, start=1):
-                        f.write(f"- **Teks {j}:** {txt}\n")
-                f.write("\n")
-                
-        print(f"\n[v] Berhasil! Hasil transkripsi telah disimpan di:")
-        print(f"    {output_md}")
+        # Construct Markdown Memory
+        for key, dialogs in results.items():
+            page_num = key.split('_')[1]
+            chapter_md_lines.append(f"## Halaman {page_num}\n")
+            if not dialogs:
+                chapter_md_lines.append("- *(Tidak ada teks terdeteksi)*\n")
+            else:
+                for j, txt in enumerate(dialogs, start=1):
+                    chapter_md_lines.append(f"- **Teks {j}:** {txt}")
+            chapter_md_lines.append("\n")
+            
+        final_markdown = "\n".join(chapter_md_lines)
+        
+        if output_md:
+            with open(str(output_md), "w", encoding="utf-8") as f:
+                f.write(final_markdown)
+            print(f"\n[v] Berhasil! Hasil transkripsi telah disimpan di:")
+            print(f"    {output_md}")
+            
+        return final_markdown
 
     finally:
         # PENTING: Bersihkan temp agar tidak memenuhi memori internal ponsel
@@ -267,13 +275,23 @@ def select_kotatsu_folder() -> Path:
 
 def process_selected_folder(komik_dir: Path, lang: str):
     """
-    Memproses seluruh isi folder komik terpilih.
-    Jika ada sub-folder atau .cbz di dalamnya, proses satu per satu.
-    Hasil .md disimpan di dalam folder komik tersebut.
+    Memproses seluruh isi folder komik terpilih dan membaginya ke dalam
+    dua format output: satu folder berisi pecahan per chapter, dan satu 
+    folder berisi gabungan semua chapter.
     """
     print(f"\n=========================================")
     print(f" Memproses: {komik_dir.name}")
     print(f"=========================================")
+    
+    # Siapkan direktori output
+    per_chapter_dir = komik_dir / "Per_Chapter"
+    semua_chapter_dir = komik_dir / "Semua_Chapter"
+    per_chapter_dir.mkdir(exist_ok=True)
+    semua_chapter_dir.mkdir(exist_ok=True)
+    
+    combined_md_path = semua_chapter_dir / f"{komik_dir.name}_Full_Transcript.md"
+    all_chapters_content = []
+    all_chapters_content.append(f"# {komik_dir.name} - Full Transcript\n")
     
     # Temukan semua file arsip (.cbz, .zip) di dalam folder utama
     archives = []
@@ -288,35 +306,49 @@ def process_selected_folder(komik_dir: Path, lang: str):
         print(f"[*] Ditemukan {len(archives)} file arsip (.cbz/.zip)")
         for archive in archives:
             title = f"{komik_dir.name} - {archive.stem}"
-            output_md = komik_dir / f"{archive.stem}_transcript.md"
+            output_md = per_chapter_dir / f"{archive.stem}.md"
             print(f"\n--- Memproses arsip: {archive.name} ---")
-            process_chapter(archive, output_md, title, lang)
-            success_count += 1
+            
+            content = process_chapter(archive, output_md, title, lang)
+            if content:
+                all_chapters_content.append(content)
+                success_count += 1
     else:
-        # Jika tidak ada arsip, asumsikan gambar lepas di dalam folder tersebut
-        # atau ada sub-folder untuk tiap chapter
-        subchapters = [d for d in komik_dir.iterdir() if d.is_dir()]
+        # Jika tidak ada arsip, asumsikan ada sub-folder untuk tiap chapter
+        subchapters = [d for d in komik_dir.iterdir() if d.is_dir() and d.name not in ["Per_Chapter", "Semua_Chapter"]]
         subchapters = natsorted(subchapters, key=lambda p: p.name)
         
         if subchapters:
             print(f"[*] Ditemukan {len(subchapters)} sub-folder chapter")
             for sub_dir in subchapters:
                 title = f"{komik_dir.name} - {sub_dir.name}"
-                output_md = komik_dir / f"{sub_dir.name}_transcript.md"
+                output_md = per_chapter_dir / f"{sub_dir.name}.md"
                 print(f"\n--- Memproses chapter: {sub_dir.name} ---")
-                process_chapter(sub_dir, output_md, title, lang)
-                success_count += 1
+                
+                content = process_chapter(sub_dir, output_md, title, lang)
+                if content:
+                    all_chapters_content.append(content)
+                    success_count += 1
         else:
             # Hanya gambar lepas di root folder komik
-            title = komik_dir.name
-            output_md = komik_dir / f"{komik_dir.name}_transcript.md"
+            title = f"{komik_dir.name} - Single Chapter"
+            output_md = per_chapter_dir / f"{komik_dir.name}.md"
             print(f"\n[*] Memproses gambar lepas di folder utama...")
-            process_chapter(komik_dir, output_md, title, lang)
-            success_count += 1
+            
+            content = process_chapter(komik_dir, output_md, title, lang)
+            if content:
+                all_chapters_content.append(content)
+                success_count += 1
 
+    # Tulis file gabungan
+    if all_chapters_content and success_count > 0:
+        with open(str(combined_md_path), "w", encoding="utf-8") as f:
+            f.write("\n\n---\n\n".join(all_chapters_content))
+            
     print(f"\n=========================================")
-    print(f" Selesai! Semua hasil .md ada di dalam:")
-    print(f" {komik_dir}")
+    print(f" Selesai! Transkripsi {success_count} item berhasil diproses.")
+    print(f" - Output Gabungan : {combined_md_path}")
+    print(f" - Output Terpisah : {per_chapter_dir}")
     print(f"=========================================")
 
 def main():
