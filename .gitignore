@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.cbz
+*.cbr
+*.zip
+*.rar
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.bmp
+*.md
+!README.md
+_temp_*/
+temp_verify/
