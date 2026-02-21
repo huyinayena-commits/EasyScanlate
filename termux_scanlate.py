@@ -216,21 +216,132 @@ def process_chapter(input_path: Path, output_md: Path, title: str, lang="ind"):
         if is_archive and temp_dir.exists():
             shutil.rmtree(str(temp_dir))
 
+# ============================================================================
+# Pemilihan Folder Interaktif (Khusus Termux)
+# ============================================================================
+
+def select_kotatsu_folder() -> Path:
+    """Menampilkan menu interaktif untuk memilih folder di dalam KOTATSU."""
+    kotatsu_dir = Path("/storage/emulated/0/KOTATSU/")
+    
+    if not kotatsu_dir.exists() or not kotatsu_dir.is_dir():
+        print(f"[!] Folder KOTATSU tidak ditemukan di: {kotatsu_dir}")
+        print("    Pastikan Anda sudah memberikan izin penyimpanan (termux-setup-storage)")
+        sys.exit(1)
+        
+    print(f"\nMencari komik di: {kotatsu_dir}\n")
+    
+    # Ambil semua sub-folder
+    subfolders = []
+    for item in kotatsu_dir.iterdir():
+        if item.is_dir():
+            subfolders.append(item)
+            
+    # Urutkan secara alfabetis
+    subfolders = sorted(subfolders, key=lambda p: p.name.lower())
+    
+    if not subfolders:
+        print("[!] Tidak ada folder komik di dalam KOTATSU.")
+        sys.exit(1)
+        
+    # Tampilkan opsi
+    for i, folder in enumerate(subfolders, start=1):
+        print(f"  [{i}] {folder.name}")
+        
+    print("\n[0] Batal / Keluar")
+    
+    while True:
+        try:
+            choice = int(input("\nPilih nomor folder yang ingin diproses: "))
+            if choice == 0:
+                print("Dibatalkan.")
+                sys.exit(0)
+            if 1 <= choice <= len(subfolders):
+                selected = subfolders[choice - 1]
+                print(f"\nAnda memilih: {selected.name}")
+                return selected
+            else:
+                print("Nomor tidak valid. Silakan coba lagi.")
+        except ValueError:
+            print("Masukkan angka yang valid.")
+
+def process_selected_folder(komik_dir: Path, lang: str):
+    """
+    Memproses seluruh isi folder komik terpilih.
+    Jika ada sub-folder atau .cbz di dalamnya, proses satu per satu.
+    Hasil .md disimpan di dalam folder komik tersebut.
+    """
+    print(f"\n=========================================")
+    print(f" Memproses: {komik_dir.name}")
+    print(f"=========================================")
+    
+    # Temukan semua file arsip (.cbz, .zip) di dalam folder utama
+    archives = []
+    for item in komik_dir.iterdir():
+        if item.is_file() and item.suffix.lower() in ARCHIVE_EXTENSIONS:
+            archives.append(item)
+            
+    archives = natsorted(archives, key=lambda p: p.name)
+    success_count = 0
+    
+    if archives:
+        print(f"[*] Ditemukan {len(archives)} file arsip (.cbz/.zip)")
+        for archive in archives:
+            title = f"{komik_dir.name} - {archive.stem}"
+            output_md = komik_dir / f"{archive.stem}_transcript.md"
+            print(f"\n--- Memproses arsip: {archive.name} ---")
+            process_chapter(archive, output_md, title, lang)
+            success_count += 1
+    else:
+        # Jika tidak ada arsip, asumsikan gambar lepas di dalam folder tersebut
+        # atau ada sub-folder untuk tiap chapter
+        subchapters = [d for d in komik_dir.iterdir() if d.is_dir()]
+        subchapters = natsorted(subchapters, key=lambda p: p.name)
+        
+        if subchapters:
+            print(f"[*] Ditemukan {len(subchapters)} sub-folder chapter")
+            for sub_dir in subchapters:
+                title = f"{komik_dir.name} - {sub_dir.name}"
+                output_md = komik_dir / f"{sub_dir.name}_transcript.md"
+                print(f"\n--- Memproses chapter: {sub_dir.name} ---")
+                process_chapter(sub_dir, output_md, title, lang)
+                success_count += 1
+        else:
+            # Hanya gambar lepas di root folder komik
+            title = komik_dir.name
+            output_md = komik_dir / f"{komik_dir.name}_transcript.md"
+            print(f"\n[*] Memproses gambar lepas di folder utama...")
+            process_chapter(komik_dir, output_md, title, lang)
+            success_count += 1
+
+    print(f"\n=========================================")
+    print(f" Selesai! Semua hasil .md ada di dalam:")
+    print(f" {komik_dir}")
+    print(f"=========================================")
+
 def main():
     parser = argparse.ArgumentParser(description="EasyScanlate Termux Edition (Tesseract & PIL)")
-    parser.add_argument("input", help="Path ke File (.cbz) atau Folder gambar")
-    parser.add_argument("-t", "--title", help="Judul komik (untuk file Hasil MD)", default="Manhwa Transcript")
+    parser.add_argument("input", nargs="?", help="Path opsional ke (.cbz) atau Folder gambar. Kosongkan untuk menu interaktif.")
+    parser.add_argument("-t", "--title", help="Judul komik (untuk file Hasil MD)", default=None)
     parser.add_argument("-l", "--lang", help="Kode bahasa tesseract (default: ind)", default="ind")
     
     args = parser.parse_args()
-    input_path = Path(args.input).resolve()
     
-    if not input_path.exists():
-        print("Path input tidak valid atau tidak ditemukan.")
-        sys.exit(1)
-        
-    output_path = input_path.parent / f"{input_path.stem}_transcript.md"
-    process_chapter(input_path, output_path, args.title, args.lang)
+    if args.input:
+        # Mode manual lewat argumen CLI
+        input_path = Path(args.input).resolve()
+        if not input_path.exists():
+            print("Path input tidak valid atau tidak ditemukan.")
+            sys.exit(1)
+            
+        title = args.title if args.title else input_path.stem
+        output_path = input_path.parent / f"{input_path.stem}_transcript.md"
+        process_chapter(input_path, output_path, title, args.lang)
+    else:
+        # Mode Menu Interaktif KOTATSU
+        print("\n=== EasyScanlate - Kotatsu Mode ===")
+        selected_folder = select_kotatsu_folder()
+        process_selected_folder(selected_folder, args.lang)
 
 if __name__ == "__main__":
     main()
