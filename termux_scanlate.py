@@ -195,8 +195,19 @@ def process_chapter(input_path: Path, output_md: Path = None, title: str = "", l
                 clean_dialogs = process_text_block(raw_text)
                 results[f"page_{i}"] = clean_dialogs
             except Exception as e:
-                print(f"    [!] Error OCR tesseract pada gambar ini: {e}")
-                results[f"page_{i}"] = []
+                error_msg = str(e)
+                if "Failed loading language" in error_msg or "tessdata" in error_msg:
+                    print(f"    [!] Peringatan: Bahasa '{lang}' tidak ditemukan. Mencoba bahasa Inggris (eng) sebagai cadangan...")
+                    try:
+                        raw_text = pytesseract.image_to_string(img_processed, lang="eng", config=custom_config)
+                        clean_dialogs = process_text_block(raw_text)
+                        results[f"page_{i}"] = clean_dialogs
+                    except Exception as e2:
+                        print(f"    [!] Error OCR cadangan: {e2}")
+                        results[f"page_{i}"] = []
+                else:
+                    print(f"    [!] Error OCR tesseract pada gambar ini: {e}")
+                    results[f"page_{i}"] = []
 
         # Construct Markdown Memory
         for key, dialogs in results.items():
