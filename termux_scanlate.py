@@ -13,6 +13,8 @@ import zipfile
 import argparse
 from pathlib import Path
 import re
+import time
+import concurrent.futures
 
 # Coba import rarfile, jika tidak ada, beri tahu user bahwa rar tidak terdukung di Termux
 try:
@@ -149,7 +151,40 @@ def extract_archive(archive_path: Path, temp_dir: Path):
         with rarfile.RarFile(str(archive_path), 'r') as r:
             r.extractall(str(temp_dir))
 
+def ocr_single_image(img_args):
+    """Fungsi pembantu untuk memproses satu gambar di dalam thread."""
+    i, img_path, total_images, lang = img_args
+    print(f"  -> Memproses hal {i}/{total_images}: {img_path.name}")
+    
+    img_processed = preprocess_image(img_path)
+    if img_processed is None:
+        return i, []
+        
+    # Konfigurasi PSM 4: Anggap halaman adalah tabel tunggal penuh teks
+    custom_config = r'--oem 3 --psm 4'
+    try:
+        raw_text = pytesseract.image_to_string(img_processed, lang=lang, config=custom_config)
+        clean_dialogs = process_text_block(raw_text)
+        return i, clean_dialogs
+    except Exception as e:
+        error_msg = str(e)
+        if "Failed loading language" in error_msg or "tessdata" in error_msg:
+            print(f"    [!] Peringatan: Data bahasa tidak ditemukan. Mencoba OCR mode darurat (tanpa bahasa khusus) untuk hal {i}...")
+            try:
+                # Hapus argumen lang=... sepenuhnya saat darurat
+                raw_text = pytesseract.image_to_string(img_processed, config=custom_config)
+                clean_dialogs = process_text_block(raw_text)
+                return i, clean_dialogs
+            except Exception as e2:
+                print(f"    [!] Error OCR darurat (hal {i}): {e2}")
+                return i, []
+        else:
+            print(f"    [!] Error OCR tesseract pada gambar ini (hal {i}): {e}")
+            return i, []
+
 def process_chapter(input_path: Path, output_md: Path = None, title: str = "", lang: str = "ind") -> str:
+    start_time = time.time()
+    
     is_archive = input_path.is_file()
     temp_dir = input_path.parent / f"_temp_{input_path.stem}"
     
@@ -172,46 +207,43 @@ def process_chapter(input_path: Path, output_md: Path = None, title: str = "", l
                     images.append(Path(root) / f)
                     
         images = natsorted(images, key=lambda p: p.name)
+        total_images = len(images)
         
         if not images:
             print("[!] Tidak ada gambar ditemukan dalam input.")
             return ""
             
-        print(f"[*] Menemukan {len(images)} gambar. Memulai memindai OCR...")
-        print(f"[*] Perhatian: Ini menggunakan mode antrean satu-satu untuk mencegah Crash di Android.\n")
+        print(f"[*] Menemukan {total_images} gambar. Memulai memindai OCR...")
+        print(f"[*] Perhatian: Mode Pemrosesan Paralel Berjalan (Mengeksekusi semua gambar sekaligus).\n")
         
         results = {}
         
-        for i, img_path in enumerate(images, start=1):
-            print(f"  -> Memproses hal {i}/{len(images)}: {img_path.name}")
-            img_processed = preprocess_image(img_path)
-            if img_processed is None:
-                continue
-                
-            # Konfigurasi PSM 4: Anggap halaman adalah tabel tunggal penuh teks
-            custom_config = r'--oem 3 --psm 4'
-            try:
-                raw_text = pytesseract.image_to_string(img_processed, lang=lang, config=custom_config)
-                clean_dialogs = process_text_block(raw_text)
-                results[f"page_{i}"] = clean_dialogs
-            except Exception as e:
-                error_msg = str(e)
-                if "Failed loading language" in error_msg or "tessdata" in error_msg:
-                    print(f"    [!] Peringatan: Data bahasa tidak ditemukan. Mencoba OCR mode darurat (tanpa bahasa khusus)...")
-                    try:
-                        # Hapus argumen lang=... sepenuhnya saat darurat
-                        raw_text = pytesseract.image_to_string(img_processed, config=custom_config)
-                        clean_dialogs = process_text_block(raw_text)
-                        results[f"page_{i}"] = clean_dialogs
-                    except Exception as e2:
-                        print(f"    [!] Error OCR darurat: {e2}")
-                        results[f"page_{i}"] = []
-                else:
-                    print(f"    [!] Error OCR tesseract pada gambar ini: {e}")
-                    results[f"page_{i}"] = []
+        # Eksekusi Paralel menggunakan ThreadPoolExecutor
+        # Thread bisa mengeksekusi I/O bound Tesseract secara bersamaan
+        img_args_list = [(i, img_path, total_images, lang) for i, img_path in enumerate(images, start=1)]
+        
+        # Gunakan jumlah pekerja sesuai dengan jumlah core atau max 10
+        max_workers = min(32, (os.cpu_count() or 1) * 4)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Map akan menjaga urutan eksekusi, tapi bisa unordered jika menggunakan as_completed.
+            # Kita tampung hasil berdasarkan index i agar selalu urut.
+            future_to_idx = {executor.submit(ocr_single_image, args): args[0] for args in img_args_list}
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    res_idx, dialogs = future.result()
+                    results[f"page_{res_idx}"] = dialogs
+                except Exception as exc:
+                    print(f"  -> Eksekusi halaman {idx} gagal: {exc}")
+                    results[f"page_{idx}"] = []
 
+        # Sort the results back to proper page order since threads complete randomly
+        # Urutkan berdasarkan nomor halaman (angka setelah 'page_')
+        sorted_results = {k: results[k] for k in sorted(results.keys(), key=lambda x: int(x.split('_')[1]))}
+        
         # Construct Markdown Memory
-        for key, dialogs in results.items():
+        for key, dialogs in sorted_results.items():
             page_num = key.split('_')[1]
             chapter_md_lines.append(f"## Halaman {page_num}\n")
             if not dialogs:
@@ -221,12 +253,20 @@ def process_chapter(input_path: Path, output_md: Path = None, title: str = "", l
                     chapter_md_lines.append(f"- **Teks {j}:** {txt}")
             chapter_md_lines.append("\n")
             
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        minutes, seconds = divmod(elapsed_time, 60)
+        time_str = f"⏱️ **Waktu Pemrosesan:** {int(minutes)} Menit {int(seconds)} Detik\n"
+        
+        chapter_md_lines.append("---\n")
+        chapter_md_lines.append(time_str)
+        
         final_markdown = "\n".join(chapter_md_lines)
         
         if output_md:
             with open(str(output_md), "w", encoding="utf-8") as f:
                 f.write(final_markdown)
-            print(f"\n[v] Berhasil! Hasil transkripsi telah disimpan di:")
+            print(f"\n[v] Berhasil! [{int(minutes)}m {int(seconds)}s] Hasil disimpan di:")
             print(f"    {output_md}")
             
         return final_markdown
